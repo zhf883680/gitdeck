@@ -1,0 +1,26 @@
+[package]
+name = "gitdeck"
+version = "0.2.0"
+description = "gitdeck — 本地 Git 分支工作台"
+authors = ["zhoufeng"]
+edition = "2021"
+rust-version = "1.77"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+include_dir = "0.7"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "time", "sync", "net", "fs", "io-util"] }
+axum = "0.8"
+tokio-stream = { version = "0.1", features = ["sync"] }
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = "s"
+strip = true
+panic = "abort"

@@ -1,0 +1,17 @@
+{
+  "name": "gitdeck",
+  "private": true,
+  "version": "0.1.0",
+  "description": "本地 Git 分支工作台：快速删分支 / 分支对比 / Codex 解读差异",
+  "scripts": {
+    "dev": "node server.js",
+    "app:dev": "tauri dev",
+    "app:build": "tauri build",
+    "icon": "tauri icon app-icon.png",
+    "win:build": "cd src-tauri && RC=$(brew --prefix llvm)/bin/llvm-rc cargo xwin build --release --target x86_64-pc-windows-msvc"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.12.3",
+    "puppeteer-core": "^25.14.0"
+  }
+}
