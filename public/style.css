@@ -554,3 +554,21 @@ input[type="checkbox"]:checked::after {
   background: rgba(122, 162, 247, 0.06); color: #6ea0d8;
   font-size: 10.5px; padding: 3px 8px;
 }
+
+/* 同步按钮进行中的转动 */
+@keyframes gd-spin { to { transform: rotate(360deg); } }
+.btn-icon.busy { pointer-events: none; opacity: 0.7; }
+.btn-icon.busy svg { animation: gd-spin 0.9s linear infinite; }
+
+/* 分支表里的远端分组 */
+.group-row td {
+  padding: 10px 10px 5px; background: rgba(255, 255, 255, 0.02);
+  border-top: 1px solid var(--line);
+}
+.group-row .g-title { font-size: 11px; color: var(--dim); letter-spacing: 0.3px; }
+.group-row .cnt {
+  margin-left: 6px; font-size: 10px; color: var(--dim2);
+  background: var(--panel-3); border-radius: 8px; padding: 1px 6px;
+}
+.group-row .g-hint { margin-left: 10px; font-size: 10.5px; color: var(--dim2); }
+.remote-row .bname { color: #a9b7c9; }

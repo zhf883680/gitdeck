@@ -211,6 +211,51 @@ function renderBaseSelect() {
 }
 
 /* ============================ 分支视图 ============================ */
+function visibleRemotes() {
+  const q = S.q.trim().toLowerCase();
+  return S.remoteBranches.filter((b) =>
+    !q ||
+    b.name.toLowerCase().includes(q) ||
+    (b.subject || '').toLowerCase().includes(q) ||
+    (b.author || '').toLowerCase().includes(q));
+}
+
+function remoteRow(b) {
+  const sel = S.selected.has(b.name);
+  const localTwin = S.branches.find((x) => x.name === b.shortName);
+  const tags = ['<span class="tag remote">远端</span>'];
+  if (localTwin) tags.push('<span class="tag plain">本地已有</span>');
+  if (b.ahead && b.behind) tags.push(`<span class="tag plain">↑${b.ahead} ↓${b.behind}</span>`);
+  else if (b.ahead) tags.push(`<span class="tag plain">领先 ${b.ahead}</span>`);
+  else if (b.behind) tags.push(`<span class="tag plain">落后 ${b.behind}</span>`);
+  return `<tr class="${sel ? 'sel' : ''} remote-row" data-name="${esc(b.name)}" data-remote="1">
+    <td class="c-chk"><input type="checkbox" class="row-check" ${sel ? 'checked' : ''} /></td>
+    <td class="c-name">
+      <div class="row"><span class="bname">${esc(b.name)}</span></div>
+      <div class="mono-sm">${esc(b.sha)} · ${esc(b.remote || '')}</div>
+    </td>
+    <td><div class="row">${tags.join('')}</div></td>
+    <td class="c-subject"><span class="subj" title="${esc(b.subject)}">${esc(b.subject)}</span></td>
+    <td class="c-author" title="${esc(b.email)}">${esc(b.author)}</td>
+    <td class="c-date" title="${esc(b.date)}">${relTime(b.date)}</td>
+    <td class="c-ops">
+      <button class="row-btn" data-act="compare">对比</button>
+      <button class="row-btn danger" data-act="del">删除</button>
+    </td>
+  </tr>`;
+}
+
+function selectedItems() {
+  const out = [];
+  for (const name of S.selected) {
+    const local = S.branches.find((b) => b.name === name);
+    if (local) { out.push(local); continue; }
+    const remote = S.remoteBranches.find((b) => b.name === name);
+    if (remote) out.push(remote);
+  }
+  return out;
+}
+
 function visibleBranches() {
   const q = S.q.trim().toLowerCase();
   let list = S.branches.slice();
@@ -233,6 +278,7 @@ function renderBranches() {
   if (S.filter === 'remote') return renderRemoteBranches();
 
   const rows = visibleBranches();
+  const remoteRows = S.filter === 'all' ? visibleRemotes() : [];
   const st = S.stats || { total: 0, merged: 0, gone: 0, unmerged: 0 };
   const allChecked = rows.length > 0 && rows.every((b) => S.selected.has(b.name));
 
@@ -264,7 +310,14 @@ function renderBranches() {
         </tr>
       </thead>
       <tbody>
-        ${rows.map(branchRow).join('') || `<tr><td colspan="7"><div class="empty-state">没有匹配的分支</div></td></tr>`}
+        ${rows.map(branchRow).join('')}
+        ${remoteRows.length ? `<tr class="group-row"><td colspan="7">
+          <span class="g-title">远端分支</span>
+          <span class="cnt">${remoteRows.length}</span>
+          <span class="g-hint">勾选后删除会执行 git push --delete</span>
+        </td></tr>
+        ${remoteRows.map(remoteRow).join('')}` : ''}
+        ${!rows.length && !remoteRows.length ? `<tr><td colspan="7"><div class="empty-state">没有匹配的分支</div></td></tr>` : ''}
       </tbody>
     </table>
     ${S.selected.size ? bulkBarHTML() : '<div style="height:12px"></div>'}
@@ -308,10 +361,11 @@ function branchRow(b) {
 }
 
 function bulkBarHTML() {
-  const sel = S.branches.filter((b) => S.selected.has(b.name));
-  const unmerged = sel.filter((b) => !b.merged);
+  const sel = selectedItems();
+  const unmerged = sel.filter((b) => !b.isRemote && !b.merged && !b.isCurrent);
+  const remoteCount = sel.filter((b) => b.isRemote).length;
   return `<div class="bulkbar">
-    <span class="count">已选 <b>${sel.length}</b> 个分支${unmerged.length ? ` · <span style="color:var(--amber)">${unmerged.length} 个未合并</span>` : ''}</span>
+    <span class="count">已选 <b>${sel.length}</b> 个分支${remoteCount ? ` · <span style="color:var(--amber)">${remoteCount} 个远端</span>` : ''}${unmerged.length ? ` · <span style="color:var(--amber)">${unmerged.length} 个未合并</span>` : ''}</span>
     <span class="spacer"></span>
     <button class="btn-ghost" id="bulk-clear">取消选择</button>
     <button class="btn-danger" id="bulk-del">删除 ${sel.length} 个分支</button>
@@ -354,14 +408,15 @@ function renderRemoteBranches() {
 
 /* ============================ 删除流程 ============================ */
 function openDeleteModal(names, opts = {}) {
-  const locals = S.branches.filter((b) => names.includes(b.name));
-  const remotes = S.remoteBranches.filter((b) => names.includes(b.name));
-  const items = locals.length ? locals : remotes;
+  const items = names
+    .map((n) => S.branches.find((b) => b.name === n) || S.remoteBranches.find((b) => b.name === n))
+    .filter(Boolean);
   if (!items.length) return;
+  const hasRemoteItems = items.some((b) => b.isRemote);
 
   const remoteCounterparts = items
     .map((b) => {
-      if (b.isRemote) return b.name;
+      if (b.isRemote) return null;
       if (b.upstreamGone) return null;         // 远端已经没了，不用再删一次
       if (b.upstream) return b.upstream;
       const guess = S.remoteBranches.find((r) => r.shortName === b.name);
@@ -369,7 +424,8 @@ function openDeleteModal(names, opts = {}) {
     })
     .filter(Boolean);
 
-  const unmerged = items.filter((b) => !b.merged && !b.isCurrent);
+  // 远端分支没有「是否已合并」的概念，不参与强制删除判断
+  const unmerged = items.filter((b) => !b.isRemote && !b.merged && !b.isCurrent);
   const needForce = unmerged.length > 0;
   const wtItems = items.filter((b) => b.worktreePath);
   const dirtyWt = wtItems.filter((b) => b.worktreeDirty > 0);
@@ -378,7 +434,7 @@ function openDeleteModal(names, opts = {}) {
     const bits = [];
     if (b.isCurrent) bits.push('<span class="tag current">当前分支</span>');
     if (b.merged) bits.push('<span class="tag merged">已合并</span>');
-    if (!b.merged && !b.isCurrent) bits.push(`<span class="tag unmerged">未合并 ${b.ahead}</span>`);
+    if (!b.isRemote && !b.merged && !b.isCurrent) bits.push(`<span class="tag unmerged">未合并 ${b.ahead}</span>`);
     if (b.upstreamGone) bits.push('<span class="tag gone">上游已删</span>');
     if (b.isRemote) bits.push('<span class="tag remote">远端</span>');
     if (b.worktreePath) bits.push(`<span class="tag worktree">worktree${b.worktreeDirty ? ' · ' + b.worktreeDirty : ''}</span>`);
@@ -440,7 +496,7 @@ function openDeleteModal(names, opts = {}) {
     const btn = $('#m-ok', mask);
     btn.disabled = true;
     btn.textContent = '删除中…';
-    const deleteRemote = !!($('#opt-remote', mask) && $('#opt-remote', mask).checked);
+    const deleteRemote = hasRemoteItems || !!($('#opt-remote', mask) && $('#opt-remote', mask).checked);
     const removeWorktrees = !!($('#opt-wt', mask) && $('#opt-wt', mask).checked);
     const force = needForce;
     const branches = items.map((b) => ({ name: b.name, remote: !!b.isRemote }));
@@ -463,6 +519,24 @@ function openDeleteModal(names, opts = {}) {
 }
 
 /* ============================ 刷新 ============================ */
+async function syncRepo() {
+  if (!S.repo) return;
+  const btn = $('#sync-btn');
+  if (btn) btn.classList.add('busy');
+  try {
+    const r = await apiPost('/api/sync', { path: S.repo.path, pull: true });
+    if (r.error) toast(`已获取远端更新，但拉取未完成：${r.error}`, 'err');
+    else toast(r.message || '已同步', 'ok');
+    await loadRepos();
+    await refreshRepo(true);
+    renderRepoList();
+  } catch (e) {
+    toast(e.message, 'err');
+  } finally {
+    if (btn) btn.classList.remove('busy');
+  }
+}
+
 async function refreshRepo(keepView = false) {
   if (!S.repo) return;
   const data = await api('/api/branches', { path: S.repo.path, base: S.base });
@@ -1318,7 +1392,11 @@ function bind() {
   });
 
   $('#refresh').addEventListener('click', async () => {
-    try { await refreshRepo(); toast('已刷新', 'ok'); } catch (e) { toast(e.message, 'err'); }
+    try { await refreshRepo(); toast('已刷新（本地状态）', 'ok'); } catch (e) { toast(e.message, 'err'); }
+  });
+
+  $('#sync-btn').addEventListener('click', () => {
+    syncRepo().catch((e) => toast(e.message, 'err'));
   });
 
   // 分支视图（事件委托）
@@ -1355,7 +1433,7 @@ function bind() {
     }
     // 点击行切换选中（当前分支不可选）
     if (e.target.tagName !== 'INPUT') {
-      if (row.classList.contains('is-current') || row.dataset.remote) return;
+      if (row.classList.contains('is-current')) return;
       if (S.selected.has(name)) S.selected.delete(name); else S.selected.add(name);
       renderBranches();
     }
@@ -1489,6 +1567,9 @@ function bind() {
     }
     if (e.key === 'r' && !e.metaKey && !e.ctrlKey && !/input|textarea|select/i.test(document.activeElement.tagName)) {
       refreshRepo().catch((err) => toast(err.message, 'err'));
+    }
+    if (e.key === 's' && !e.metaKey && !e.ctrlKey && !/input|textarea|select/i.test(document.activeElement.tagName)) {
+      syncRepo().catch((err) => toast(err.message, 'err'));
     }
   });
 }

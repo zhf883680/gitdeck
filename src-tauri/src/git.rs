@@ -85,6 +85,18 @@ pub async fn run(repo: Option<&str>, args: &[String]) -> Out {
     }
 }
 
+/// 带超时的执行：fetch / pull 这类走网络的命令必须有上限，否则会一直挂着
+pub async fn run_timeout(repo: Option<&str>, args: &[String], secs: u64) -> Out {
+    match tokio::time::timeout(std::time::Duration::from_secs(secs), run(repo, args)).await {
+        Ok(o) => o,
+        Err(_) => Out {
+            ok: false,
+            stdout: String::new(),
+            stderr: format!("操作超时（{secs} 秒），可能是网络或凭据问题"),
+        },
+    }
+}
+
 pub async fn run_ok(repo: Option<&str>, args: &[String]) -> Result<String, String> {
     let o = run(repo, args).await;
     if o.ok {
@@ -785,7 +797,7 @@ pub async fn branch_report(repo: &str, base_override: Option<&str>) -> BranchRep
         }
     });
 
-    let remotes_branches: Vec<Branch> = raw
+    let mut remotes_branches: Vec<Branch> = raw
         .into_iter()
         .filter(|b| b.is_remote)
         .filter(|b| !remotes.iter().any(|r| b.name == format!("{r}/HEAD")))
@@ -795,6 +807,33 @@ pub async fn branch_report(repo: &str, base_override: Option<&str>) -> BranchRep
             b
         })
         .collect();
+
+    // 远端分支同样算出相对基准分支的 ahead/behind，方便和本地分支放在一起看
+    let names: Vec<String> = remotes_branches.iter().map(|b| b.name.clone()).collect();
+    let mut ab: HashMap<String, (i64, i64)> = HashMap::new();
+    for chunk in names.chunks(8) {
+        let mut set = tokio::task::JoinSet::new();
+        for n in chunk {
+            let repo_s = repo.to_string();
+            let base_s = base.clone();
+            let n2 = n.clone();
+            set.spawn(async move {
+                let (a, b) = ahead_behind(&repo_s, &base_s, &n2).await;
+                (n2, a, b)
+            });
+        }
+        while let Some(res) = set.join_next().await {
+            if let Ok((n, a, b)) = res {
+                ab.insert(n, (a, b));
+            }
+        }
+    }
+    for b in remotes_branches.iter_mut() {
+        if let Some((a, be)) = ab.get(&b.name) {
+            b.ahead = *a;
+            b.behind = *be;
+        }
+    }
 
     let now_unix = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -1252,6 +1291,71 @@ pub async fn status(repo: &str) -> StatusOut {
         })
         .collect();
     StatusOut { head, files, stashes }
+}
+
+/* -------------------------------- 同步远端 -------------------------------- */
+
+pub async fn fetch_all(repo: &str) -> Result<(), String> {
+    let out = run_timeout(
+        Some(repo),
+        &[s("fetch"), s("--all"), s("--prune"), s("--no-tags")],
+        180,
+    )
+    .await;
+    if out.ok {
+        Ok(())
+    } else {
+        Err(clean_err(&out.stderr))
+    }
+}
+
+/// 只做快进拉取（--ff-only），绝不产生合并提交或冲突
+pub async fn pull_ff(repo: &str) -> Result<String, String> {
+    let up = run(
+        Some(repo),
+        &[
+            s("rev-parse"),
+            s("--abbrev-ref"),
+            s("--symbolic-full-name"),
+            s("@{upstream}"),
+        ],
+    )
+    .await;
+    let upstream = up.stdout.trim().to_string();
+    if !up.ok || upstream.is_empty() {
+        return Err("当前分支没有设置上游分支，无法拉取".into());
+    }
+
+    let branch = current_branch(repo).await;
+    let before = run(Some(repo), &[s("rev-parse"), s("HEAD")])
+        .await
+        .stdout
+        .trim()
+        .to_string();
+    let out = run_timeout(Some(repo), &[s("pull"), s("--ff-only"), s("--no-edit")], 180).await;
+    if !out.ok {
+        let err = clean_err(&out.stderr);
+        let hint = if err.contains("Not possible to fast-forward") || err.contains("diverging") {
+            "本地有未推送的提交，无法快进；请先处理本地提交"
+        } else if err.contains("local changes") || err.contains("would be overwritten") {
+            "工作区有未提交改动，可能被覆盖；先提交或 stash 再拉取"
+        } else {
+            ""
+        };
+        return Err(if hint.is_empty() { err } else { format!("{hint}（{err}）") });
+    }
+
+    let after = run(Some(repo), &[s("rev-parse"), s("HEAD")])
+        .await
+        .stdout
+        .trim()
+        .to_string();
+    if before == after {
+        Ok(format!("{branch} 已是最新（{}）", &upstream))
+    } else {
+        let short = if after.len() >= 7 { &after[..7] } else { &after };
+        Ok(format!("{branch} 已快进到 {short}"))
+    }
 }
 
 /* -------------------------------- 删除分支 -------------------------------- */

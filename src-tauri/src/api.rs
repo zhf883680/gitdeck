@@ -254,6 +254,37 @@ async fn api_status(Query(q): Query<Q>) -> Result<Json<Value>, ApiError> {
 
 /* ------------------------------- 删除分支 ------------------------------- */
 
+async fn api_sync(Json(body): Json<Value>) -> Result<Json<Value>, ApiError> {
+    let path = body.get("path").and_then(|v| v.as_str()).unwrap_or("");
+    let repo = git::resolve_repo(path).await.map_err(bad)?;
+    let do_pull = body.get("pull").and_then(|v| v.as_bool()).unwrap_or(true);
+
+    git::fetch_all(&repo).await.map_err(bad)?;
+
+    let mut message = "已获取远端更新".to_string();
+    let mut pulled = false;
+    let mut pull_error = String::new();
+
+    if do_pull {
+        match git::pull_ff(&repo).await {
+            Ok(m) => {
+                message = m;
+                pulled = true;
+            }
+            Err(e) => pull_error = e,
+        }
+    }
+
+    let st = git::status(&repo).await;
+    Ok(okj(json!({
+        "fetched": true,
+        "pulled": pulled,
+        "message": message,
+        "error": pull_error,
+        "status": st,
+    })))
+}
+
 async fn api_delete_branch(Json(body): Json<Value>) -> Result<Json<Value>, ApiError> {
     let path = body.get("path").and_then(|v| v.as_str()).unwrap_or("");
     let repo = git::resolve_repo(path).await.map_err(bad)?;
@@ -346,6 +377,7 @@ pub fn router() -> Router {
         .route("/api/authors", get(api_authors))
         .route("/api/status", get(api_status))
         .route("/api/branch/delete", post(api_delete_branch))
+        .route("/api/sync", post(api_sync))
         .route("/api/codex", post(api_codex))
         .fallback(static_handler)
 }
